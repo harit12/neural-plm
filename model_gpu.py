@@ -10,7 +10,7 @@ class DataSet:
     def __init__(self,data, training = .7, val = .15, test = .15):
         self.data = data
         self.split_data(training, val, test)
-        self.vocab = DataSet.gen_vocab(data)
+        self.vocab, self.vocab_eff = DataSet.gen_vocab(data)
     def split_data(self, training, val, test):
         """
         """
@@ -28,12 +28,13 @@ class DataSet:
         """
         data = [word for sentence in nltk.corpus.brown.sents() for word in sentence]
         res = list(set(data))
-        return res
+        res_2 = {word:x for x,word in enumerate(res)}
+        return res, res_2
     def w2idx(self, word):
         """
         """
-        vocab = self.vocab
-        res = vocab.index(word)
+        vocab = self.vocab_eff
+        res = vocab[word]
         return res
     def idx2w(self, index):
         """
@@ -44,7 +45,9 @@ class DataSet:
     def sample2idx(self, sample):
         """
         """
-        return [self.w2idx(word) for word in sample]
+        res = [self.w2idx(word) for word in sample]
+        #print(datetime.datetime.now(), 'transform')
+        return res
     def idx2sample(self, idx):
         """
         """
@@ -56,7 +59,9 @@ class DataSet:
         data = self.data_splitted[split]
         random = np.random.randint(0, len(data)-n)
         sample = (data[random:random+n-1], data[random+n])
-        sample = (torch.LongTensor(self.sample2idx(sample[0])).cuda(), torch.LongTensor([self.w2idx(sample[1])]).cuda())
+        #print(datetime.datetime.now(), 'create sample')
+        sample = (np.array(self.sample2idx(sample[0])), np.array([self.w2idx(sample[1])]))
+        #print(datetime.datetime.now(), 'create tensor')
         return sample
 
     def gen_batch(self, n,batch_size, split = 'training'):
@@ -64,17 +69,16 @@ class DataSet:
         """
         data = self.data_splitted[split]
         batch = [self.gen_sample(n) for x in range(batch_size)]
-        xs = list()
-        ys = list()
-        for sample in batch:
-            #print(sample)
-            x,y = sample
-            xs.append(x)
-            ys.append(y)
-        x_tens = torch.stack(xs).cuda()
+        #print(datetime.datetime.now(), 'create batch')
+        xs = [i[0] for i in batch]
+        ys = [i[1] for i in batch]
+        #print(datetime.datetime.now(), 'list time')
+        x_tens = np.stack(xs, axis=0)
         #print(x_tens)
-        y_tens = torch.stack(ys).cuda()
-        batch = (x_tens, y_tens)
+        y_tens = np.stack(ys, axis=0)
+        #print(datetime.datetime.now(), 'stack time')
+        batch = (torch.from_numpy(x_tens), torch.from_numpy(y_tens))
+        #print(datetime.datetime.now(), 'conv time')
         return batch
 
 class Model(nn.Module):
@@ -85,10 +89,10 @@ class Model(nn.Module):
         super(Model, self).__init__()
         n = n-1
         self.embedding = nn.Embedding(len(data.vocab), m)
-        self.linear = nn.Linear(n*m, 32, bias = True)
+        self.linear = nn.Linear(n*m, 128, bias = True)
         self.tanh = nn.Tanh()
         self.log_sm = nn.LogSoftmax(dim= 1)
-        self.linearF = nn.Linear(32, len(data.vocab), bias= True)
+        self.linearF = nn.Linear(128, len(data.vocab), bias= True)
 
     def forward(self, inputs, batch_size):
         """
@@ -103,10 +107,11 @@ class Model(nn.Module):
         #print(yhat.size())
         return x
 
-def train(data,n = 3, m = 30, batch_size = 128, lr = .01, epochs = 100, momentum = 0.7):
+def train(data,n = 5, m = 30, batch_size = 128, lr = .01, epochs = 100, momentum = 0.7):
     """
     """
-    net = Model(data, m, n).cuda()
+    net = Model(data, m, n)
+    net = net.to(cuda)
     optimizer = torch.optim.SGD(net.parameters(), lr= lr, momentum = momentum)
     criterion = torch.nn.NLLLoss()
     data_count = len(data.data_splitted['training'])
@@ -114,15 +119,21 @@ def train(data,n = 3, m = 30, batch_size = 128, lr = .01, epochs = 100, momentum
     for epoch in range(epochs):
         for i in range(int(data_count/batch_size)-n):
             x, y = data.gen_batch(n, batch_size)
-            y = y.squeeze(1)
-            #print(x,y)
-            outputs = net(x, batch_size)
+            x = x.to(cuda)
+            y = y.squeeze(1).to(cuda)
+            #print(datetime.datetime.now(), 'datagen time')
+            #print(x.size())
+            outputs = net(x, batch_size).to(cuda)
+            #print(datetime.datetime.now(), 'forward time')
             optimizer.zero_grad()
-            loss = criterion(outputs, y)
+            loss = criterion(outputs, y).to(cuda)
             loss.backward()
+            #print(datetime.datetime.now(), 'backprop time')
             optimizer.step()
-            if(i%100==1):
-              print(i, datetime.datetime.now(), '100 iters')
+            #print(datetime.datetime.now(), 'grad_update time')
+            #print(i)
+            #if(i%100==1):
+             # print(i, datetime.datetime.now(), '100 iters\nLoss:{}'.format(loss))
         print(datetime.datetime.now(), '1 epoch')
         if loss<.01:
             break
